@@ -1,0 +1,92 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  # ---------- ЭТАП 1: проверка, сборка, тесты ----------
+  build-test:
+    name: Проверка, сборка и тесты
+    runs-on: ubuntu-latest
+    steps:
+      - name: Скачать код
+        uses: actions/checkout@v4
+
+      - name: Установить .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Восстановить зависимости
+        run: dotnet restore
+
+      - name: Проверка стиля кода
+        run: dotnet format --verify-no-changes
+
+      - name: Сборка
+        run: dotnet build --no-restore -c Release -warnaserror
+
+      - name: Запуск тестов и измерение покрытия
+        run: >
+          dotnet test --no-build -c Release
+          --logger "trx;LogFileName=test-results.trx"
+          --collect:"XPlat Code Coverage"
+          --results-directory ./TestResults
+
+      - name: Сохранить отчёты о тестах
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: TestResults/**
+
+  # ---------- ЭТАП 2: упаковка ----------
+  package:
+    name: Упаковка приложения
+    needs: build-test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Скачать код
+        uses: actions/checkout@v4
+
+      - name: Установить .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Опубликовать приложение
+        run: dotnet publish PR5/PR5.csproj -c Release -o ./publish
+
+      - name: Сохранить готовый пакет
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr5-package
+          path: ./publish
+
+  # ---------- ЭТАП 3: уведомление ----------
+  notify:
+    name: Отчёт о результате
+    needs: [build-test, package]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Сформировать итоговый отчёт
+        run: |
+          echo "## Результат сборки PR5" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Этап | Результат |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|-----------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Проверка, сборка и тесты | ${{ needs.build-test.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Упаковка | ${{ needs.package.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Автор: ${{ github.actor }}, ветка: ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+
+      - name: Сообщить об ошибке
+        if: needs.build-test.result != 'success' || needs.package.result != 'success'
+        run: |
+          echo "::error::Сборка завершилась с ошибкой!"
+          exit 1
